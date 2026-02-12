@@ -505,14 +505,14 @@ class FlutterV2rayClientDesktop {
 
       final resourcesPath = Platform.isMacOS ? path.dirname(xpath) : xpath;
       final tunJsonPath = path.join(resourcesPath, 'tun.json');
-
+      
       // Read tun.json
       final tunFile = File(tunJsonPath);
       if (!tunFile.existsSync()) {
         logListener('[TUN] tun.json not found');
         return;
       }
-
+      
       final tunContent = await tunFile.readAsString();
       final tunConfig = jsonDecode(tunContent) as Map<String, dynamic>;
       
@@ -780,124 +780,17 @@ class FlutterV2rayClientDesktop {
     required String url,
     DelayType type = DelayType.http,
   }) async {
-    String? host;
-    int? port;
-
-    try {
-      // 1. استخراج هاست و پورت از لینک کانفیگ
-      if (url.startsWith('vmess://')) {
-        final decoded = utf8.decode(base64Decode(url.substring(8)));
-        final json = jsonDecode(decoded);
-        host = json['add'];
-        port = int.tryParse(json['port'].toString());
-      } else if (url.startsWith('vless://') || url.startsWith('trojan://')) {
-        // پارس کردن ساده برای vless و trojan
-        final uri = Uri.tryParse(url);
-        if (uri != null) {
-          host = uri.host;
-          port = uri.port;
-          // اگر هاست در پارامترها بود (مثلا در query params)
-          if (host.isEmpty) {
-            // هندل کردن حالت‌های خاص لینک‌های خراب
-            final parts = url.split('@');
-            if(parts.length > 1) {
-              final address = parts[1].split(':')[0];
-              final portPart = parts[1].split(':')[1].split('?')[0];
-              host = address;
-              port = int.tryParse(portPart);
-            }
-          }
-        }
-      } else if (url.startsWith('ss://')) {
-        // پارس ss (معمولا base64 است)
-        try {
-          final uri = Uri.parse(url);
-          host = uri.host;
-          port = uri.port;
-        } catch(e) {
-          // اگر فرمت قدیمی بود و Uri پارس نکرد، نیاز به دیکد base64 است
-          // برای سادگی فعلا فرض بر لینک استاندارد است
-        }
-      }
-
-      // اگر جیسون کامل فرستاده شده بود (خروجی xray-knife یا parser)
-      if (host == null && url.contains('{')) {
-        // اگر ورودی جیسون خام بود
-        try {
-          final json = jsonDecode(url);
-          // باید ساختار جیسون v2ray را پیمایش کنید تا outbounds -> settings -> vnext -> address را پیدا کنید
-          // این بخش پیچیده است، پیشنهاد می‌شود همیشه لینک کانفیگ را بفرستید
-        } catch(_) {}
-      }
-
-      if (host == null || port == null) {
-        return -1;
-      }
-
-      // 2. انجام عملیات پینگ (TCP Handshake)
-      final stopwatch = Stopwatch()..start();
-      try {
-        // پیدا کردن آی‌پی کارت شبکه اصلی (برای دور زدن VPN)
-        InternetAddress? sourceAddress;
-
-        // فقط اگر VPN وصل است، دنبال اینترفیس اصلی بگردیم
-        // (فرض میکنیم متغیری دارید که وضعیت اتصال را نشان میدهد، اگر ندارید همیشه این کار را بکنید ضرر ندارد)
-        sourceAddress = await _getPhysicalNetworkInterface();
-
-        // اتصال با مشخص کردن sourceAddress
-        // این باعث می‌شود ترافیک از تانل رد نشود و مستقیم برود
-        final socket = await Socket.connect(
-          host,
-          port,
-          sourceAddress: sourceAddress, // نکته کلیدی اینجاست
-          timeout: Duration(seconds: 3),
-        );
-
-        socket.destroy();
-        stopwatch.stop();
-        return stopwatch.elapsedMilliseconds;
-      } catch (e) {
-        return -1;
-      }
-
-    } catch (e) {
-      return -1;
-    }
-  }
-
-  Future<InternetAddress?> _getPhysicalNetworkInterface() async {
-    try {
-      // لیست تمام اینترفیس‌های شبکه
-      final interfaces = await NetworkInterface.list(
-        includeLoopback: false,
-        type: InternetAddressType.IPv4,
-      );
-
-      for (var interface in interfaces) {
-        // فیلتر کردن اینترفیس‌های VPN
-        // در مک معمولا utun است، در ویندوز/لینوکس tun یا tap
-        final name = interface.name.toLowerCase();
-
-        if (name.contains('tun') ||
-            name.contains('tap') ||
-            name.contains('pptp') ||
-            name.contains('vpn')) {
-          continue; // این‌ها را رد کن
-        }
-
-        // معمولاً en0 در مک وای‌فای است، و wlan/eth در سایر سیستم‌ها
-        // اولین اینترفیسی که آی‌پی معتبر داشته باشد را برمی‌گردانیم
-        for (var addr in interface.addresses) {
-          if (!addr.isLinkLocal && !addr.isLoopback) {
-            return addr;
-          }
-        }
-      }
-    } catch (e) {
-      // اگر نتوانست پیدا کند، نال برمی‌گرداند تا سیستم تصمیم بگیرد
-      return null;
-    }
-    return null;
+    final xraypath = await geResPath();
+    if (xraypath == null) return -1;
+    final knife = path.join(xraypath, 'xray-knife');
+    // xray-knife uses different subcommands for HTTP vs TCP delay:
+    //   http: `xray-knife http -c <url>`
+    //   tcp:  `xray-knife net tcp -c <url>`
+    final args = type == DelayType.tcp
+        ? ['net', type.name, '-c', url]
+        : [type.name, '-c', url];
+    final output = await Process.run(knife, args);
+    return _getDelayFromOutput('${output.stdout}${output.stderr}', type);
   }
 
   /// Returns version string of Xray core by running `xray --version`.
